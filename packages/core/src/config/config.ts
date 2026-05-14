@@ -68,6 +68,11 @@ import { InputFormat, OutputFormat } from '../output/types.js';
 import { PromptRegistry } from '../prompts/prompt-registry.js';
 import { SkillManager } from '../skills/skill-manager.js';
 import { PermissionManager } from '../permissions/permission-manager.js';
+import {
+  type AutoModeDenialState,
+  createDenialState,
+  resetDenialState,
+} from '../permissions/denialTracking.js';
 import { SubagentManager } from '../subagents/subagent-manager.js';
 import type { SubagentConfig } from '../subagents/types.js';
 import { BackgroundTaskRegistry } from '../agents/background-tasks.js';
@@ -170,6 +175,7 @@ export enum ApprovalMode {
   PLAN = 'plan',
   DEFAULT = 'default',
   AUTO_EDIT = 'auto-edit',
+  AUTO = 'auto',
   YOLO = 'yolo',
 }
 
@@ -204,12 +210,35 @@ export const APPROVAL_MODE_INFO: Record<ApprovalMode, ApprovalModeInfo> = {
     name: 'Auto Edit',
     description: 'Automatically approve file edits',
   },
+  [ApprovalMode.AUTO]: {
+    id: ApprovalMode.AUTO,
+    name: 'Auto',
+    description: 'LLM classifier auto-approves safe actions, blocks risky ones',
+  },
   [ApprovalMode.YOLO]: {
     id: ApprovalMode.YOLO,
     name: 'YOLO',
     description: 'Automatically approve all tools',
   },
 };
+
+/**
+ * Settings for the AUTO approval mode classifier.
+ *
+ * `hints` and `environment` are natural-language strings injected additively
+ * into the classifier's system prompt; they do NOT use rule-matching syntax.
+ * Use `permissions.allow / ask / deny` for hard rules.
+ */
+export interface AutoModeSettings {
+  hints?: {
+    /** Natural-language descriptions of actions the user wants AUTO mode to allow. */
+    allow?: string[];
+    /** Natural-language descriptions of actions the user wants AUTO mode to block. */
+    deny?: string[];
+  };
+  /** Environment / context lines injected into the classifier's system prompt. */
+  environment?: string[];
+}
 
 export interface AccessibilitySettings {
   enableLoadingPhrases?: boolean;
@@ -458,6 +487,8 @@ export interface ConfigParameters {
     allow?: string[];
     ask?: string[];
     deny?: string[];
+    /** Settings consumed by the AUTO approval mode classifier. */
+    autoMode?: AutoModeSettings;
   };
   toolDiscoveryCommand?: string;
   toolCallCommand?: string;
@@ -728,6 +759,7 @@ export class Config {
   private readonly permissionsAllow: string[];
   private readonly permissionsAsk: string[];
   private readonly permissionsDeny: string[];
+  private readonly permissionsAutoMode: AutoModeSettings;
   private readonly toolDiscoveryCommand: string | undefined;
   private readonly toolCallCommand: string | undefined;
   private readonly mcpServerCommand: string | undefined;
@@ -745,6 +777,7 @@ export class Config {
   private readonly contextRuleExcludes: string[];
   private approvalMode: ApprovalMode;
   private prePlanMode?: ApprovalMode;
+  private autoModeDenialState: AutoModeDenialState = createDenialState();
   private readonly accessibility: AccessibilitySettings;
   private readonly telemetrySettings: TelemetrySettings;
   private readonly gitCoAuthor: GitCoAuthorSettings;
@@ -882,6 +915,7 @@ export class Config {
     this.permissionsAllow = params.permissions?.allow || [];
     this.permissionsAsk = params.permissions?.ask || [];
     this.permissionsDeny = params.permissions?.deny || [];
+    this.permissionsAutoMode = params.permissions?.autoMode ?? {};
     this.toolDiscoveryCommand = params.toolDiscoveryCommand;
     this.toolCallCommand = params.toolCallCommand;
     this.mcpServerCommand = params.mcpServerCommand;
@@ -2461,6 +2495,32 @@ export class Config {
   }
 
   /**
+   * Returns the AUTO approval mode classifier settings (hints + environment).
+   * Returns an empty object when no settings are configured.
+   */
+  getAutoModeSettings(): AutoModeSettings {
+    return this.permissionsAutoMode;
+  }
+
+  /**
+   * Returns the AUTO mode denialTracking state for the current session.
+   * Used by the scheduler to decide whether to fall back from classifier
+   * evaluation to manual approval. Session-scoped, never persisted.
+   */
+  getAutoModeDenialState(): AutoModeDenialState {
+    return this.autoModeDenialState;
+  }
+
+  /**
+   * Replace the AUTO mode denialTracking state. Caller produces the new
+   * state via one of the pure transitions in `permissions/denialTracking.ts`
+   * (recordAllow / recordBlock / recordUnavailable / recordFallback*).
+   */
+  setAutoModeDenialState(state: AutoModeDenialState): void {
+    this.autoModeDenialState = state;
+  }
+
+  /**
    * Returns the approval mode that was active before entering plan mode.
    * Falls back to DEFAULT if no pre-plan mode was recorded.
    */
@@ -2486,6 +2546,25 @@ export class Config {
       this.approvalMode === ApprovalMode.PLAN
     ) {
       this.prePlanMode = undefined;
+    }
+    // Strip over-broad allow rules (Bash interpreter wildcards, any Agent /
+    // Skill allow) on AUTO entry; restore them on AUTO exit. Settings on
+    // disk are NEVER touched — this is a runtime-only adjustment of the
+    // active PermissionManager rule set. The PermissionManager is `null`
+    // until initialize() is called, so skip the hook on early-startup
+    // mode changes (the strip will happen via initialize for AUTO-default
+    // sessions).
+    const fromMode = this.approvalMode;
+    if (this.permissionManager) {
+      if (mode === ApprovalMode.AUTO && fromMode !== ApprovalMode.AUTO) {
+        this.permissionManager.stripDangerousRulesForAutoMode();
+      } else if (fromMode === ApprovalMode.AUTO && mode !== ApprovalMode.AUTO) {
+        this.permissionManager.restoreDangerousRules();
+      }
+    }
+    // Any deliberate mode change invalidates the AUTO denialTracking signal.
+    if (fromMode !== mode) {
+      this.autoModeDenialState = resetDenialState();
     }
     this.approvalMode = mode;
   }
