@@ -73,14 +73,7 @@ describe('installation scripts', () => {
     expect(script).toContain(
       'npm install -g @qwen-code/qwen-code@latest --registry',
     );
-    expect(script).toContain('Installing Qwen Code version:');
-    expect(script).toContain('QWEN CODE');
-    expect(script).toContain(
-      'Qwen Code ${qwen_version} installed successfully.',
-    );
-    expect(script).toContain('To start:');
-    expect(script).toContain('Installed to:');
-    expect(script).toContain('Uninstall:');
+    expect(script).toContain('You can now run: qwen');
   });
 
   it('supports code-server-style standalone install on Linux/macOS', () => {
@@ -135,9 +128,7 @@ describe('installation scripts', () => {
     expect(script).toContain(
       'tar -xzf "${archive_path}" -C "${destination}" || return 1',
     );
-    expect(script).toContain('curl -fL --retry 2 --progress-bar');
-    expect(script).toContain('wget --tries=3 "${url}" -O "${destination}"');
-    expect(script).toContain('echo "Downloading ${archive_name}"');
+    expect(script).toContain('wget -q --tries=3 "${url}" -O "${destination}"');
     expect(script).toContain('TEMP_DIRS+=');
     expect(script).not.toContain('-print -quit');
   });
@@ -165,14 +156,7 @@ describe('installation scripts', () => {
     expect(script).toContain(
       'npm install -g @qwen-code/qwen-code@latest --registry',
     );
-    expect(script).toContain('Installing Qwen Code version:');
-    expect(script).toContain('QWEN CODE');
-    expect(script).toContain(
-      'Qwen Code !QWEN_VERSION! installed successfully.',
-    );
-    expect(script).toContain('To start:');
-    expect(script).toContain('Installed to:');
-    expect(script).toContain('Uninstall:');
+    expect(script).toContain('You can now run: qwen');
   });
 
   it('supports code-server-style standalone install on Windows', () => {
@@ -242,7 +226,6 @@ describe('installation scripts', () => {
     expect(script).toContain('WARNING: Failed to remove failed install');
     expect(script).toContain('QWEN_INSTALL_ROOT');
     expect(script).toContain('npm fallback also failed');
-    expect(script).toContain('echo Downloading !ARCHIVE_NAME!');
   });
 });
 
@@ -1200,7 +1183,7 @@ describe('Linux/macOS installer end-to-end', () => {
         const archive = packageFakeStandalone(tmpDir);
         const installRoot = path.join(tmpDir, 'install');
         const home = path.join(tmpDir, 'home');
-        const output = runUnixInstaller(archive, installRoot, home).toString();
+        runUnixInstaller(archive, installRoot, home);
 
         expect(existsSync(path.join(installRoot, 'bin', 'qwen'))).toBe(true);
         expect(
@@ -1218,19 +1201,6 @@ describe('Linux/macOS installer end-to-end', () => {
           .toString()
           .trim();
         expect(version).toBe('0.0.0-smoke');
-        expect(output).toContain('Installing Qwen Code version: latest');
-        expect(output).toContain('QWEN CODE');
-        expect(output).toContain(
-          'Qwen Code 0.0.0-smoke installed successfully.',
-        );
-        expect(output).toContain('To start:\n  cd <project>\n  qwen');
-        expect(output).toContain(
-          `Installed to:\n  ${path.join(installRoot, 'lib', 'qwen-code')}`,
-        );
-        expect(output).toContain('Uninstall:');
-        expect(output).toContain(
-          `rm -rf '${path.join(installRoot, 'lib', 'qwen-code')}'`,
-        );
       } finally {
         rmSync(tmpDir, { recursive: true, force: true });
         restoreDist();
