@@ -10,6 +10,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { RELEASE_TARGETS } from './build-standalone-release.js';
+import { TARGETS } from './create-standalone-package.js';
 import { isStandaloneArchiveName } from './release-asset-config.js';
 import {
   fail,
@@ -24,8 +25,7 @@ const __dirname = path.dirname(__filename);
 const rootDir = path.resolve(__dirname, '..');
 
 const EXPECTED_STANDALONE_ARCHIVE_NAMES = RELEASE_TARGETS.map(
-  ({ qwenTarget }) =>
-    `qwen-code-${qwenTarget}.${qwenTarget === 'win-x64' ? 'zip' : 'tar.gz'}`,
+  ({ qwenTarget }) => standaloneArchiveName(qwenTarget),
 );
 // Release artifacts that the installer chain expects in a GitHub Release.
 // Hosted installer scripts (install-qwen.sh / install-qwen.bat) are served
@@ -93,16 +93,30 @@ async function verifyReleaseDirectory(dir) {
   const checksums = readReleaseChecksums(dir);
   assertExpectedChecksumEntries(checksums);
 
-  for (const assetName of EXPECTED_STANDALONE_ARCHIVE_NAMES) {
-    const assetPath = path.join(dir, assetName);
-    if (!fs.existsSync(assetPath)) {
-      fail(`Missing release asset: ${assetName}`);
-    }
+  const unexpected = fs
+    .readdirSync(dir)
+    .filter((fileName) => !EXPECTED_RELEASE_ASSET_NAMES.includes(fileName))
+    .sort();
+  if (unexpected.length > 0) {
+    fail(`Unexpected file(s) in release directory: ${unexpected.join(', ')}`);
+  }
 
-    const actual = await sha256File(assetPath);
-    if (actual !== checksums.get(assetName)) {
-      fail(`Checksum verification failed for ${assetName}`);
-    }
+  const results = await Promise.allSettled(
+    EXPECTED_STANDALONE_ARCHIVE_NAMES.map(async (assetName) => {
+      const assetPath = path.join(dir, assetName);
+      if (!fs.existsSync(assetPath)) {
+        fail(`Missing release asset: ${assetName}`);
+      }
+
+      const actual = await sha256File(assetPath);
+      if (actual !== checksums.get(assetName)) {
+        fail(`Checksum verification failed for ${assetName}`);
+      }
+    }),
+  );
+  const firstFailure = results.find((result) => result.status === 'rejected');
+  if (firstFailure) {
+    throw firstFailure.reason;
   }
 
   console.log(
@@ -172,10 +186,15 @@ async function assertRemoteAssetAvailable(url, fetchImpl) {
       Range: 'bytes=0-0',
     },
   });
-  if (!response.ok) {
+  const status = response.status;
+  const ok = response.ok;
+  await response.body?.cancel?.();
+  if (!ok) {
     fail(`Release asset URL is not available: ${url}`);
   }
-  await response.body?.cancel?.();
+  if (status !== 206) {
+    fail(`Release asset URL does not support ranged GET: ${url}`);
+  }
 }
 
 async function fetchText(url, fetchImpl) {
@@ -201,10 +220,58 @@ function normalizeHttpsBaseUrl(baseUrl) {
   if (parsed.protocol !== 'https:') {
     fail(`--base-url must use https: ${baseUrl}`);
   }
+  if (isPrivateOrReservedHost(parsed.hostname)) {
+    fail(`--base-url must not target a private network: ${baseUrl}`);
+  }
   if (!parsed.pathname.endsWith('/')) {
     parsed.pathname = `${parsed.pathname}/`;
   }
   return parsed.toString();
+}
+
+function standaloneArchiveName(qwenTarget) {
+  const targetConfig = TARGETS.get(qwenTarget);
+  if (!targetConfig) {
+    fail(`Unknown release target: ${qwenTarget}`);
+  }
+  return `qwen-code-${qwenTarget}.${targetConfig.outputExtension}`;
+}
+
+function isPrivateOrReservedHost(hostname) {
+  const normalized = hostname.toLowerCase().replace(/^\[|\]$/g, '');
+  if (normalized === 'localhost' || normalized.endsWith('.localhost')) {
+    return true;
+  }
+
+  const ipv4Parts = normalized.split('.');
+  if (ipv4Parts.length === 4 && ipv4Parts.every((part) => /^\d+$/.test(part))) {
+    const octets = ipv4Parts.map(Number);
+    if (octets.some((octet) => octet < 0 || octet > 255)) {
+      return false;
+    }
+    const [first, second] = octets;
+    return (
+      first === 0 ||
+      first === 10 ||
+      first === 127 ||
+      (first === 169 && second === 254) ||
+      (first === 172 && second >= 16 && second <= 31) ||
+      (first === 192 && second === 168)
+    );
+  }
+
+  if (!normalized.includes(':')) {
+    return false;
+  }
+
+  return (
+    normalized === '::' ||
+    normalized === '::1' ||
+    normalized === '0:0:0:0:0:0:0:1' ||
+    normalized.startsWith('fc') ||
+    normalized.startsWith('fd') ||
+    normalized.startsWith('fe80:')
+  );
 }
 
 export {
