@@ -269,6 +269,14 @@ export class AuthMessageHandler extends BaseMessageHandler {
 
     if (this.authInteractiveHandler) {
       await this.authInteractiveHandler('token-plan', undefined, apiKey);
+    } else {
+      console.error(
+        '[AuthMessageHandler] authInteractiveHandler not set; token-plan config was not written.',
+      );
+      this.sendToWebView({
+        type: 'authError',
+        data: { message: 'Internal error: auth handler not initialized.' },
+      });
     }
   }
 

@@ -1118,8 +1118,10 @@ export class WebViewProvider {
         updates.push(config.update('provider', qwenSettings.provider, target));
       }
       if (
+        qwenSettings.provider === 'coding-plan' &&
+        qwenSettings.codingPlanRegion &&
         config.get<'china' | 'global'>('codingPlanRegion', 'china') !==
-        qwenSettings.codingPlanRegion
+          qwenSettings.codingPlanRegion
       ) {
         updates.push(
           config.update(
@@ -1365,6 +1367,8 @@ export class WebViewProvider {
           activeModel: modelId,
         });
       }
+
+      await this.syncQwenConfigToVSCodeSettings();
 
       // Disconnect + reconnect
       if (this.agentInitialized) {
