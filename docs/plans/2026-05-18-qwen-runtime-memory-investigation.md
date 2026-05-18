@@ -5,9 +5,9 @@ Date: 2026-05-18
 ## Context
 
 Local benchmarks show Qwen Code using substantially more process-tree RSS than
-Claude Code for similar headless task shapes. The latest five-case matrix found
-Qwen Code peaking around `0.85-1.06 GiB` while Claude Code stayed around
-`0.28-0.37 GiB`.
+Claude Code for similar non-interactive CLI task shapes. The latest five-case
+matrix found Qwen Code peaking around `0.85-1.06 GiB` while Claude Code stayed
+around `0.28-0.37 GiB`.
 
 This document proposes a draft investigation and optimization direction. It is
 not intended to claim a final root cause yet. The immediate goal is to make the
@@ -51,17 +51,17 @@ The main evidence is:
 
 Relevant upstream work already exists:
 
-| Item    | Status                | Role in the memory work                                                                                        |
-| ------- | --------------------- | -------------------------------------------------------------------------------------------------------------- |
-| `#4180` | merged PR             | Adds baseline `/doctor memory` diagnostics. This is the first instrumentation slice.                           |
-| `#4181` | open issue, no PR yet | Adds interpretation and pressure classification for `/doctor memory`.                                          |
-| `#4182` | open issue, no PR yet | Adds structured `/doctor memory --json` output and safe session-scale stats.                                   |
-| `#4183` | open issue, no PR yet | Adds opt-in heap snapshots and bounded memory timeline diagnostics.                                            |
-| `#4184` | open issue, no PR yet | Adds large tool-result retention diagnostics and designs offload/preview mitigation.                           |
-| `#4127` | open PR, conflicting  | Adds heap-pressure safety nets for long-session OOM prevention. Useful mitigation, not enough for attribution. |
-| `#4168` | open PR               | Redesigns auto-compaction thresholds. Useful for context pressure, not enough for process baseline analysis.   |
-| `#4172` | open PR               | Decouples auto-memory recall from the main request path. Useful for latency/blocking, not direct RSS proof.    |
-| `#4188` | merged PR             | Bounds build/test caches to prevent OOM in parallel test runs. Important but separate from runtime benchmarks. |
+| Item    | Status                | Role in the memory work                                                                                         |
+| ------- | --------------------- | --------------------------------------------------------------------------------------------------------------- |
+| `#4180` | merged PR             | Adds baseline `/doctor memory` diagnostics. This is the first instrumentation slice.                            |
+| `#4181` | open issue, no PR yet | Adds interpretation and pressure classification for `/doctor memory`.                                           |
+| `#4182` | open issue, no PR yet | Adds structured `/doctor memory --json` output and safe session-scale stats.                                    |
+| `#4183` | open issue, no PR yet | Adds opt-in heap snapshots and bounded memory timeline diagnostics.                                             |
+| `#4184` | open issue, no PR yet | Adds large tool-result retention diagnostics and designs offload/preview mitigation.                            |
+| `#4127` | open PR, conflicting  | Adds heap-pressure safety nets for long-session OOM prevention. Useful mitigation, not enough for attribution.  |
+| `#4168` | open PR               | Redesigns auto-compaction thresholds. Useful for context pressure, not enough for task-time footprint analysis. |
+| `#4172` | open PR               | Decouples auto-memory recall from the main request path. Useful for latency/blocking, not direct RSS proof.     |
+| `#4188` | merged PR             | Bounds build/test caches to prevent OOM in parallel test runs. Important but separate from runtime benchmarks.  |
 
 This investigation should build on that direction rather than wait for all
 follow-up issues to land.
@@ -69,7 +69,8 @@ follow-up issues to land.
 Most of the remaining work is instrumentation-first. The open diagnostics
 issues are designed to make memory reports explainable before attempting a
 runtime fix. The open mitigation PRs may reduce specific OOM paths, but they do
-not yet explain why short headless tasks repeatedly peak near `1 GiB`.
+not yet explain why short non-interactive CLI tasks repeatedly peak near
+`1 GiB`.
 
 ## Why This Draft Starts With Documentation
 
@@ -97,22 +98,23 @@ provider issue.
 
 The strongest current inference is:
 
-> Qwen Code appears to carry a high headless runtime baseline, likely amplified
-> by larger context/tool-result/session handling. The likely problem area is the
-> CLI runtime and agent data path, not the selected model alone.
+> Qwen Code appears to carry a high non-interactive CLI task execution
+> footprint, likely amplified by larger context/tool-result/session handling.
+> The likely problem area is the CLI runtime and agent data path, not the
+> selected model alone.
 
 More specifically, the evidence points away from "too many tool calls" as the
 primary cause. Tool-call counts were similar across CLIs, and Claude sometimes
 used more turns or tool calls while keeping lower RSS. The more plausible
 problem is that Qwen Code initializes or retains heavier state for the same
-short headless task, then amplifies that baseline with larger context,
-tool-result, saved-output, or session-history data.
+short non-interactive CLI task, then amplifies that execution footprint with
+larger context, tool-result, saved-output, or session-history data.
 
 The most likely buckets are:
 
-1. **Process and module baseline**: Qwen Code may initialize more runtime,
-   tools, UI/session infrastructure, or provider machinery than needed for
-   headless tasks.
+1. **Process and module startup/execution cost**: Qwen Code may initialize more
+   runtime, tools, UI/session infrastructure, or provider machinery than needed
+   for non-interactive CLI tasks.
 2. **History and context assembly**: Qwen Code may retain or construct larger
    model-facing context than Claude Code for the same task shape.
 3. **Tool-result retention**: large or repeated tool results may be retained in
@@ -155,8 +157,8 @@ These are candidates, not conclusions:
 
 1. **Bounded tool-output retention**: store large output out of the hot path and
    keep only preview, metadata, and retrieval pointers in live history.
-2. **Headless lazy loading**: avoid initializing TUI-only or interactive-only
-   subsystems in headless mode.
+2. **Non-interactive lazy loading**: avoid initializing TUI-only or
+   interactive-only subsystems during non-interactive CLI task execution.
 3. **Session/UI history caps**: degrade old or heavy history items into compact
    transcript entries.
 4. **Context assembly accounting**: measure and cap large tool results before
@@ -223,7 +225,7 @@ After that lands locally, rerun the same Qwen model matrix and compare:
 This draft does not claim that:
 
 - all memory pressure is caused by tool output;
-- one existing open PR will solve the observed baseline;
+- one existing open PR will solve the observed task-time footprint;
 - model provider differences are irrelevant in every environment;
 - single-run local measurements are sufficient for release-level performance
   claims.

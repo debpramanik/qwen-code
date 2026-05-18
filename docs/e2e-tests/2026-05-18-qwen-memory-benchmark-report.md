@@ -12,7 +12,8 @@ The headline result is consistent across the latest matrix:
 
 - Qwen Code process-tree RSS peak: about `0.85-1.06 GiB`.
 - Claude Code process-tree RSS peak: about `0.28-0.37 GiB`.
-- Qwen Code was about `2.3x-3.6x` higher in the tested headless tasks.
+- Qwen Code was about `2.3x-3.6x` higher in the tested
+  non-interactive CLI task benchmarks.
 
 The difference reproduced in small PR review, code navigation, and synthetic
 diff workloads. It is therefore unlikely to be explained only by one large PR
@@ -64,8 +65,8 @@ shapes rather than only one PR review workload.
 ## Preliminary Conclusion
 
 The current data is strong enough to say that Qwen Code has a higher runtime
-memory footprint than Claude Code in these local headless workloads. It is not
-strong enough to name one final root cause yet.
+memory footprint than Claude Code in these local non-interactive CLI task
+benchmarks. It is not strong enough to name one final root cause yet.
 
 The leading explanation is a Qwen Code runtime/path difference rather than a
 model provider difference:
@@ -76,8 +77,9 @@ model provider difference:
 - Qwen Code repeatedly sends or accounts for more tokens than Claude Code for
   similar work;
 - Qwen Code's largest observed component is the child Node/Qwen worker process,
-  which points toward process baseline, module loading, context assembly, live
-  history, tool-result retention, or subagent/saved-output paths.
+  which points toward task-time process footprint, module loading, context
+  assembly, live history, tool-result retention, or subagent/saved-output
+  paths.
 
 The most useful next measurement is therefore not another external RSS-only
 run. The next measurement should split RSS into V8 heap, native memory,
@@ -89,20 +91,21 @@ activity.
 The benchmark does not yet prove one root cause, but it does narrow the likely
 problem area.
 
-| Signal                                                                                       | What it suggests                                                                           | What it does not prove                                                                                 |
-| -------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------ |
-| Qwen remains near `1 GiB` in small PR and code-navigation cases                              | A high headless runtime baseline is likely involved                                        | It does not identify whether the baseline is V8 heap, native memory, module loading, or retained state |
-| Diff size from 100 KiB to 5 MiB does not scale linearly with RSS                             | Raw diff bytes alone are probably not the primary driver                                   | Large outputs can still amplify memory in real PR review flows                                         |
-| Qwen uses more tokens than Claude in every matrix cell                                       | Qwen likely constructs or retains larger prompt/context/tool-result state for similar work | Token count is not the same as process memory and may be an effect rather than the cause               |
-| Tool call counts are similar, and Claude sometimes uses more turns/tool calls with lower RSS | A longer tool-call chain is unlikely to be the main explanation by itself                  | Tool output size and retention still need to be measured                                               |
-| Earlier large PR runs showed saved-output recovery and subagent amplification                | Tool-output truncation and saved-output paths are likely heavy-workload amplifiers         | They do not explain the entire small-task baseline                                                     |
+| Signal                                                                                       | What it suggests                                                                           | What it does not prove                                                                                  |
+| -------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------- |
+| Qwen remains near `1 GiB` in small PR and code-navigation cases                              | A high non-interactive task-time runtime cost is likely involved                           | It does not identify whether the footprint is V8 heap, native memory, module loading, or retained state |
+| Diff size from 100 KiB to 5 MiB does not scale linearly with RSS                             | Raw diff bytes alone are probably not the primary driver                                   | Large outputs can still amplify memory in real PR review flows                                          |
+| Qwen uses more tokens than Claude in every matrix cell                                       | Qwen likely constructs or retains larger prompt/context/tool-result state for similar work | Token count is not the same as process memory and may be an effect rather than the cause                |
+| Tool call counts are similar, and Claude sometimes uses more turns/tool calls with lower RSS | A longer tool-call chain is unlikely to be the main explanation by itself                  | Tool output size and retention still need to be measured                                                |
+| Earlier large PR runs showed saved-output recovery and subagent amplification                | Tool-output truncation and saved-output paths are likely heavy-workload amplifiers         | They do not explain the entire small-task execution footprint                                           |
 
 The current best explanation is therefore:
 
-1. **Baseline cost first**: Qwen Code likely initializes or retains more runtime
-   state in headless mode than Claude Code. This may include agent runtime,
-   tool registry, provider adapters, session services, or UI/history structures
-   that are not strictly needed for a short headless task.
+1. **Task-time runtime cost first**: Qwen Code likely initializes or retains
+   more runtime state during non-interactive CLI task execution than Claude
+   Code. This may include agent runtime, tool registry, provider adapters,
+   session services, or UI/history structures that are not strictly needed for
+   a short non-interactive task.
 2. **Context/tool-result volume second**: Qwen Code appears to carry larger
    model-facing or session-facing context for similar work. The token gap makes
    context assembly, tool result normalization, and history retention important
@@ -113,7 +116,7 @@ The current best explanation is therefore:
 
 The next diagnostic run should answer where the `~1 GiB` sits:
 
-- high immediately after startup: module/runtime baseline;
+- high immediately after startup: module/runtime startup cost;
 - jumps after tool execution: tool-output retention or result normalization;
 - jumps during request assembly: context construction or duplicated histories;
 - grows after streaming/compression: response retention or compression state;
@@ -233,9 +236,9 @@ gap.
 
 The current evidence supports these hypotheses, in priority order:
 
-1. Qwen Code has a higher runtime/process baseline than Claude Code in headless
-   tasks. The Qwen child Node worker was typically the largest process in local
-   sampling, often around `0.7-0.8 GiB`.
+1. Qwen Code has a higher non-interactive task-time process footprint than
+   Claude Code. The Qwen child Node worker was typically the largest process in
+   local sampling, often around `0.7-0.8 GiB`.
 2. Model choice is not the main explanation. Both `pai/glm-5` and
    `qwen3.6-plus` showed the same broad Qwen-vs-Claude gap.
 3. Large diff size alone is not the main explanation. The synthetic diff size
@@ -244,9 +247,10 @@ The current evidence supports these hypotheses, in priority order:
 4. Context/tool-result handling is still a likely contributor. Qwen Code used
    more tokens than Claude Code in every matrix cell, and earlier large-PR runs
    showed saved tool-output recovery and subagent amplification paths.
-5. The next diagnostic layer should separate V8 heap, native RSS, loaded module
-   baseline, session history, UI history, tool-result retention, and subagent
-   activity. External RSS alone cannot distinguish those causes.
+5. The next diagnostic layer should separate V8 heap, native RSS, loaded
+   module/runtime startup cost, session history, UI history, tool-result
+   retention, and subagent activity. External RSS alone cannot distinguish
+   those causes.
 
 ## Caveats
 
